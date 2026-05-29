@@ -55,6 +55,7 @@ class Catalog_dropbox extends Catalog
     private const DROPBOX_CONNECT_TIMEOUT = 15;
     private const DROPBOX_REQUEST_TIMEOUT = 30;
     private const DROPBOX_TAG_READ_TIMEOUT = 30;
+    private const DROPBOX_REFRESH_TOKEN_PREFIX = 'refresh:';
 
     private string $version     = '000002';
     private string $type        = 'dropbox';
@@ -116,7 +117,13 @@ class Catalog_dropbox extends Catalog
      */
     public function get_create_help(): string
     {
-        return "<ul><li>" . T_("Go to https://www.dropbox.com/developers/apps/create") . "</li><li>" . T_("Select 'Dropbox API app'") . "</li><li>" . T_("Select 'Full Dropbox'") . "</li><li>" . T_("Give a name to your application and create it") . "</li><li>" . T_("Click the 'Generate' button to create an Access Token") . "</li><li>" . T_("Copy your App key and App secret and Access Token into the following fields.") . "</li></ul>";
+        return "<ul><li>" . implode("</li><li>", [
+            T_("Go to https://www.dropbox.com/developers/apps/create"),
+            T_("Select 'Scoped access' and 'Full Dropbox' if the catalog should read existing files anywhere in Dropbox; choose 'App Folder' only if the catalog path is inside the app folder."),
+            T_("Enable the files.metadata.read and files.content.read permissions on the app's Permissions tab and submit the changes."),
+            T_("For quick testing, generate an access token in the OAuth 2 settings. For long-running catalogs, use an offline OAuth flow and enter the refresh token prefixed with refresh:."),
+            T_("Copy your app key, app secret, and access token or refresh token into the following fields."),
+        ]) . "</li></ul>";
     }
 
     /**
@@ -159,7 +166,7 @@ class Catalog_dropbox extends Catalog
 
         $fields['apikey']    = ['description' => T_('API key'), 'type' => 'text'];
         $fields['secret']    = ['description' => T_('Secret'), 'type' => 'password'];
-        $fields['authtoken'] = ['description' => T_('Access Token'), 'type' => 'text'];
+        $fields['authtoken'] = ['description' => T_('Access Token or refresh:<token>'), 'type' => 'text'];
         $fields['path']      = ['description' => T_('Path'), 'type' => 'text', 'value' => '/'];
         $fields['getchunk']  = [
             'description' => T_('Get chunked files on analyze'),
@@ -229,18 +236,17 @@ class Catalog_dropbox extends Catalog
         $getchunk  = (int)($data['getchunk'] ?? 0);
 
         if (!strlen($apikey) || !strlen($secret) || !strlen($authtoken)) {
-            AmpError::add('general', T_('Error: API Key, Secret and Access Token Required for Dropbox Catalogs'));
+            AmpError::add('general', T_('Error: API Key, Secret and Access Token or refresh token required for Dropbox Catalogs'));
 
             return false;
         }
         try {
-            $app = new DropboxApp($apikey, $secret, $authtoken);
+            $dropbox = self::createDropboxClient($apikey, $secret, $authtoken);
         } catch (DropboxClientException $error) {
             AmpError::add('general', T_('Invalid "API key", "secret", or "access token": ' . $error->getMessage()));
 
             return false;
         }
-        $dropbox = self::createDropboxClient($app);
 
         try {
             $dropbox->listFolder($path);
@@ -856,23 +862,74 @@ class Catalog_dropbox extends Catalog
     private function createDropbox(): Dropbox
     {
         return self::createDropboxClient(
-            new DropboxApp($this->apikey, $this->secret, $this->authtoken)
+            $this->apikey,
+            $this->secret,
+            $this->authtoken
         );
     }
 
-    private static function createDropboxClient(DropboxApp $app): Dropbox
+    /**
+     * @throws DropboxClientException
+     */
+    private static function createDropboxClient(string $appKey, string $appSecret, string $token): Dropbox
     {
         return new Dropbox(
-            $app,
+            new DropboxApp($appKey, $appSecret, self::getDropboxAccessToken($appKey, $appSecret, $token)),
             [
-                'http_client_handler' => new GuzzleClient(
-                    [
-                        'connect_timeout' => self::DROPBOX_CONNECT_TIMEOUT,
-                        'timeout' => self::DROPBOX_REQUEST_TIMEOUT,
-                    ]
-                ),
+                'http_client_handler' => self::createHttpClient(),
             ]
         );
+    }
+
+    private static function createHttpClient(): GuzzleClient
+    {
+        return new GuzzleClient(
+            [
+                'connect_timeout' => self::DROPBOX_CONNECT_TIMEOUT,
+                'timeout' => self::DROPBOX_REQUEST_TIMEOUT,
+            ]
+        );
+    }
+
+    /**
+     * @throws DropboxClientException
+     */
+    private static function getDropboxAccessToken(string $appKey, string $appSecret, string $token): string
+    {
+        if (!str_starts_with($token, self::DROPBOX_REFRESH_TOKEN_PREFIX)) {
+            return $token;
+        }
+
+        $refreshToken = trim(substr($token, strlen(self::DROPBOX_REFRESH_TOKEN_PREFIX)));
+        if ($refreshToken === '') {
+            throw new DropboxClientException('Refresh token cannot be empty.');
+        }
+
+        try {
+            $response = self::createHttpClient()->post(
+                'https://api.dropboxapi.com/oauth2/token',
+                [
+                    'auth' => [$appKey, $appSecret],
+                    'form_params' => [
+                        'grant_type' => 'refresh_token',
+                        'refresh_token' => $refreshToken,
+                    ],
+                ]
+            );
+            $body = json_decode((string)$response->getBody(), true);
+        } catch (Throwable $error) {
+            throw new DropboxClientException(
+                'Unable to refresh Dropbox access token: ' . $error->getMessage(),
+                (int)$error->getCode(),
+                $error
+            );
+        }
+
+        if (!is_array($body) || !isset($body['access_token']) || !is_string($body['access_token'])) {
+            throw new DropboxClientException('Unable to refresh Dropbox access token.');
+        }
+
+        return $body['access_token'];
     }
 
     private function runWithFileTimeout(string $path, callable $callback): void
