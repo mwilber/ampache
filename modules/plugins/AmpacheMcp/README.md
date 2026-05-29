@@ -7,7 +7,14 @@ Self-contained PHP MCP endpoint for Ampache. It exposes two tools:
 
 ## Deploy
 
-Expose `public/index.php` with PHP-FPM or Apache. Do not route this through Ampache core files.
+Copy the plugin paths into the Ampache project root, preserving the directory layout:
+
+```text
+modules/plugins/AmpacheMcp/
+public/AmpacheMcp/
+```
+
+Ampache's `public/` directory is the web server root, so only the small files in `public/AmpacheMcp/` are web-facing. The implementation stays in `modules/plugins/AmpacheMcp/src/`.
 
 Required environment:
 
@@ -22,7 +29,9 @@ Recommended:
 
 ## Endpoints
 
-- `GET /health` returns service health.
-- `POST /` or `POST /mcp.php` accepts MCP JSON-RPC requests. Configure your web server rewrite/alias to expose this as `/mcp` if your client expects the RTM-style path.
+- `GET /AmpacheMcp/health` returns service health when `.htaccess` rewrite rules are enabled.
+- `GET /AmpacheMcp/index.php/health` returns service health without rewrite rules.
+- `POST /AmpacheMcp/mcp.php` accepts MCP JSON-RPC requests.
+- `POST /AmpacheMcp/` also accepts MCP JSON-RPC requests when the web server routes the request to `index.php`.
 
 The endpoint follows the same web-accessible pattern as `rtm-mcp`: public health/landing routes, token auth for MCP, CORS with `mcp-session-id` exposed, and streamable HTTP-compatible JSON-RPC responses.
