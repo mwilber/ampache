@@ -334,13 +334,15 @@ class Catalog_dropbox extends Catalog
                 $listFolderContinue = $dropbox->listFolderContinue($cursor);
                 $remainingItems     = $listFolderContinue->getItems();
                 foreach ($remainingItems as $item) {
-                    if ($item->getDataProperty('.tag') == "file") {
+                    if ($item instanceof ModelInterface && $item->getDataProperty('.tag') == "file") {
                         $subpath = $item->getDataProperty('path_display');
-                        if ($this->add_file($dropbox, $subpath)) {
+                        if (is_string($subpath) && $this->add_file($dropbox, $subpath)) {
                             $songsadded++;
                         }
                     }
                 }
+
+                $listFolderContents = $listFolderContinue;
             } while ($listFolderContinue->hasMoreItems() === true);
         }
 
