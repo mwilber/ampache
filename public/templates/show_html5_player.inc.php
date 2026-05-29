@@ -385,11 +385,15 @@ if (AmpConfig::get('song_page_title') && $isShare === false) {
 <?php // Load Aurora.js scripts
 if (AmpConfig::get('webplayer_aurora')) {
     $atypes = ['mp3', 'flac', 'ogg', 'vorbis', 'opus', 'aac', 'alac'];
+    $auroraDir = dirname(__DIR__) . '/lib/modules/aurora.js';
     // Load only existing codec scripts
     if ($isVideo === false) {
         foreach ($atypes as $atype) {
+            if ($atype === 'opus' && !Core::is_readable($auroraDir . '/libopus.wasm')) {
+                continue;
+            }
             $spath = $web_path . '/lib/modules/aurora.js/' . $atype . '.js';
-            if (Core::is_readable($spath)) {
+            if (Core::is_readable($auroraDir . '/' . $atype . '.js')) {
                 echo '<script src="' . $spath . '" defer></script>' . "\n";
             }
         }
