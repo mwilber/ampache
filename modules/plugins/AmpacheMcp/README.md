@@ -3,7 +3,7 @@
 Self-contained PHP MCP endpoint for Ampache. It exposes two tools:
 
 - `ampache-search`: search Ampache songs.
-- `ampache-temporary-playlist`: build the authenticated user's Ampache temporary playlist from song ids or a search query.
+- `ampache-temporary-playlist`: build the persistent `AI Queue` playlist from song ids or a search query.
 
 ## Deploy
 
@@ -28,12 +28,14 @@ Required config values:
 
 - `user_token`: shared token the remote AI agent must send as `x-user-token` or `Authorization: Bearer`.
 - `ampache_base_url`: public Ampache base URL, for example `https://music.example.com`.
-- `ampache_api_key`: Ampache API key for the user whose library and temporary playlist should be controlled.
+- `ampache_api_key`: Ampache API key for the user whose library and `AI Queue` playlist should be controlled.
+- `ampache_root`: local filesystem path to the Ampache install. Required so the MCP server can create or replace the persistent queue playlist.
 
 Recommended config values:
 
-- `ampache_root`: local filesystem path to the Ampache install. When set, the MCP server writes to Ampache's native `tmp_playlist` tables for the API session. Without it, the server falls back to creating a private playlist named `AI Temporary Playlist ...`.
 - `ampache_api_version`: defaults to `8.0.0`.
+- `playlist_name`: defaults to `AI Queue`.
+- `playlist_type`: defaults to `public`, so a separate Subsonic player user can see the queue. Set to `private` if the player authenticates as the same Ampache user as the MCP API key.
 
 ## Endpoints
 

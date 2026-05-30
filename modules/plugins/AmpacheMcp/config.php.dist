@@ -9,14 +9,20 @@ return [
     // Public Ampache base URL, without a trailing slash.
     'ampache_base_url' => 'https://music.example.com',
 
-    // Ampache API key for the user whose library and temporary playlist should be controlled.
+    // Ampache API key for the user whose library and AI Queue playlist should be controlled.
     'ampache_api_key' => '',
 
     // Ampache API version to request during handshake.
     'ampache_api_version' => '8.0.0',
 
-    // Filesystem path to the Ampache install root. Required for native temporary playlist writes.
+    // Filesystem path to the Ampache install root. Required for AI Queue playlist writes.
     'ampache_root' => '/var/www/ampache',
+
+    // Persistent playlist used as the cross-session queue visible to Subsonic clients.
+    'playlist_name' => 'AI Queue',
+
+    // Use public when a separate Subsonic user/player should be able to see the queue.
+    'playlist_type' => 'public',
 
     'server_name' => 'ampache-mcp',
 ];

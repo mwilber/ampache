@@ -10,7 +10,7 @@ final class McpHttpServer
 
     public function __construct(
         private AmpacheApiClient $ampache,
-        private NativeTemporaryPlaylist $temporaryPlaylist,
+        private PersistentQueuePlaylist $queuePlaylist,
         private string $userToken,
         private string $serverName
     ) {
@@ -118,8 +118,8 @@ final class McpHttpServer
             ],
             [
                 'name' => 'ampache-temporary-playlist',
-                'title' => 'Ampache: Build Temporary Playlist',
-                'description' => 'Replace or append to the Ampache temporary playlist with selected song ids. Can search first when query is provided.',
+                'title' => 'Ampache: Build AI Queue',
+                'description' => 'Replace or append to the persistent Ampache playlist named AI Queue with selected song ids. Can search first when query is provided.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
@@ -172,21 +172,12 @@ final class McpHttpServer
             }
 
             $authSession = $this->ampache->getAuthToken();
-            if ($this->temporaryPlaylist->isAvailable()) {
-                $result = $this->temporaryPlaylist->replaceSongs($authSession, $songIds, (bool)($args['clear'] ?? true));
-                $text = sprintf('Temporary playlist %d now contains %d song(s).', $result['id'], $result['total']);
-
-                return [
-                    'content' => [['type' => 'text', 'text' => $text]],
-                    'structuredContent' => ['mode' => 'native_tmp_playlist'] + $result,
-                ];
-            }
-
-            $result = $this->ampache->createPlaylistFromSongs($this->temporaryPlaylistName(), $songIds);
+            $result = $this->queuePlaylist->replaceSongs($authSession, $songIds, (bool)($args['clear'] ?? true));
+            $text = sprintf('Playlist "%s" now contains %d song(s).', $result['name'], $result['total']);
 
             return [
-                'content' => [['type' => 'text', 'text' => sprintf('Created private playlist "%s" with %d song(s).', $result['playlist']['name'] ?? 'Temporary Playlist', count($result['added']))]],
-                'structuredContent' => ['mode' => 'private_playlist_fallback'] + $result,
+                'content' => [['type' => 'text', 'text' => $text]],
+                'structuredContent' => ['mode' => 'persistent_playlist'] + $result,
             ];
         }
 
@@ -249,11 +240,6 @@ final class McpHttpServer
         }
 
         return (string)$node;
-    }
-
-    private function temporaryPlaylistName(): string
-    {
-        return 'AI Temporary Playlist ' . gmdate('Y-m-d H:i:s') . ' UTC';
     }
 
     /**
