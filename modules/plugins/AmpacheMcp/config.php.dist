@@ -1,0 +1,22 @@
+<?php
+
+declare(strict_types=1);
+
+return [
+    // Shared token the remote AI agent must send as x-user-token or Authorization: Bearer.
+    'user_token' => 'change-me',
+
+    // Public Ampache base URL, without a trailing slash.
+    'ampache_base_url' => 'https://music.example.com',
+
+    // Ampache API key for the user whose library and temporary playlist should be controlled.
+    'ampache_api_key' => '',
+
+    // Ampache API version to request during handshake.
+    'ampache_api_version' => '8.0.0',
+
+    // Filesystem path to the Ampache install root. Required for native temporary playlist writes.
+    'ampache_root' => '/var/www/ampache',
+
+    'server_name' => 'ampache-mcp',
+];

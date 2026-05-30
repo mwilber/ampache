@@ -4,11 +4,32 @@ declare(strict_types=1);
 
 namespace AmpacheMcp;
 
-function ampache_mcp_env(string $key, string $default = ''): string
+/**
+ * @return array<string, string>
+ */
+function ampache_mcp_config(): array
 {
-    $value = getenv($key);
+    $configFile = dirname(__DIR__) . '/config.php';
+    if (!is_file($configFile)) {
+        return [];
+    }
 
-    return ($value === false) ? $default : trim((string)$value);
+    $config = require $configFile;
+    if (!is_array($config)) {
+        return [];
+    }
+
+    $normalized = [];
+    foreach ($config as $key => $value) {
+        $normalized[(string)$key] = trim((string)$value);
+    }
+
+    return $normalized;
+}
+
+function ampache_mcp_config_value(array $config, string $key, string $default = ''): string
+{
+    return ($config[$key] ?? '') !== '' ? $config[$key] : $default;
 }
 
 function ampache_mcp_json_response(array $payload, int $status = 200, array $headers = []): void

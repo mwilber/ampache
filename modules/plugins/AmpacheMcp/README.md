@@ -16,16 +16,24 @@ public/AmpacheMcp/
 
 Ampache's `public/` directory is the web server root, so only the small files in `public/AmpacheMcp/` are web-facing. The implementation stays in `modules/plugins/AmpacheMcp/src/`.
 
-Required environment:
+## Configure
 
-- `USER_TOKEN`: shared token the remote AI agent must send as `x-user-token` or `Authorization: Bearer`.
-- `AMPACHE_BASE_URL`: public Ampache base URL, for example `https://music.example.com`.
-- `AMPACHE_API_KEY`: Ampache API key for the user whose library and temporary playlist should be controlled.
+Copy the sample config and edit it on the server:
 
-Recommended:
+```bash
+cp modules/plugins/AmpacheMcp/config.php.dist modules/plugins/AmpacheMcp/config.php
+```
 
-- `AMPACHE_ROOT`: local filesystem path to the Ampache install. When set, the MCP server writes to Ampache's native `tmp_playlist` tables for the API session. Without it, the server falls back to creating a private playlist named `AI Temporary Playlist ...`.
-- `AMPACHE_API_VERSION`: defaults to `8.0.0`.
+Required config values:
+
+- `user_token`: shared token the remote AI agent must send as `x-user-token` or `Authorization: Bearer`.
+- `ampache_base_url`: public Ampache base URL, for example `https://music.example.com`.
+- `ampache_api_key`: Ampache API key for the user whose library and temporary playlist should be controlled.
+
+Recommended config values:
+
+- `ampache_root`: local filesystem path to the Ampache install. When set, the MCP server writes to Ampache's native `tmp_playlist` tables for the API session. Without it, the server falls back to creating a private playlist named `AI Temporary Playlist ...`.
+- `ampache_api_version`: defaults to `8.0.0`.
 
 ## Endpoints
 

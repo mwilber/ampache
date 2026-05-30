@@ -35,8 +35,12 @@ final class McpHttpServer
             return;
         }
 
-        if (!$this->isAuthorized()) {
-            ampache_mcp_json_response(['message' => 'user is not authenticated'], 401);
+        $authError = $this->authorizationError();
+        if ($authError !== null) {
+            ampache_mcp_json_response(
+                ['message' => $authError['message']],
+                $authError['status']
+            );
             return;
         }
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -252,10 +256,16 @@ final class McpHttpServer
         return 'AI Temporary Playlist ' . gmdate('Y-m-d H:i:s') . ' UTC';
     }
 
-    private function isAuthorized(): bool
+    /**
+     * @return array{status: int, message: string}|null
+     */
+    private function authorizationError(): ?array
     {
         if ($this->userToken === '') {
-            throw new \RuntimeException('USER_TOKEN must be set to enable MCP request authentication.');
+            return [
+                'status' => 503,
+                'message' => 'Ampache MCP config is missing user_token.',
+            ];
         }
 
         $headers = ampache_mcp_request_headers();
@@ -265,7 +275,14 @@ final class McpHttpServer
             $token = substr($auth, 7);
         }
 
-        return hash_equals($this->userToken, (string)$token);
+        if (!hash_equals($this->userToken, (string)$token)) {
+            return [
+                'status' => 401,
+                'message' => 'user is not authenticated',
+            ];
+        }
+
+        return null;
     }
 
     private function sessionId(): string
