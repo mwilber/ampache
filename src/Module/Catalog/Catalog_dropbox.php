@@ -122,6 +122,7 @@ class Catalog_dropbox extends Catalog
             T_("Select 'Scoped access' and 'Full Dropbox' if the catalog should read existing files anywhere in Dropbox; choose 'App Folder' only if the catalog path is inside the app folder."),
             T_("Enable the files.metadata.read and files.content.read permissions on the app's Permissions tab and submit the changes."),
             T_("For quick testing, generate an access token in the OAuth 2 settings. For long-running catalogs, use an offline OAuth flow and enter the refresh token prefixed with refresh:."),
+            T_("Raw Dropbox refresh tokens are accepted when creating a catalog and will be saved with the refresh: prefix."),
             T_("Copy your app key, app secret, and access token or refresh token into the following fields."),
         ]) . "</li></ul>";
     }
@@ -251,9 +252,21 @@ class Catalog_dropbox extends Catalog
         try {
             $dropbox->listFolder($path);
         } catch (DropboxClientException $error) {
-            AmpError::add('general', T_('Invalid "dropbox-path": ' . $error->getMessage()));
+            if (!self::isDropboxRefreshToken($authtoken) && self::isDropboxInvalidAccessToken($error)) {
+                $authtoken = self::formatDropboxRefreshToken($authtoken);
+                try {
+                    $dropbox = self::createDropboxClient($apikey, $secret, $authtoken);
+                    $dropbox->listFolder($path);
+                } catch (DropboxClientException $refreshError) {
+                    AmpError::add('general', T_('Invalid "dropbox-path": ' . $refreshError->getMessage()));
 
-            return false;
+                    return false;
+                }
+            } else {
+                AmpError::add('general', T_('Invalid "dropbox-path": ' . $error->getMessage()));
+
+                return false;
+            }
         }
 
         // Make sure this catalog isn't already in use by an existing catalog
@@ -896,7 +909,7 @@ class Catalog_dropbox extends Catalog
      */
     private static function getDropboxAccessToken(string $appKey, string $appSecret, string $token): string
     {
-        if (!str_starts_with($token, self::DROPBOX_REFRESH_TOKEN_PREFIX)) {
+        if (!self::isDropboxRefreshToken($token)) {
             return $token;
         }
 
@@ -930,6 +943,23 @@ class Catalog_dropbox extends Catalog
         }
 
         return $body['access_token'];
+    }
+
+    private static function isDropboxRefreshToken(string $token): bool
+    {
+        return str_starts_with($token, self::DROPBOX_REFRESH_TOKEN_PREFIX);
+    }
+
+    private static function formatDropboxRefreshToken(string $token): string
+    {
+        return self::isDropboxRefreshToken($token)
+            ? $token
+            : self::DROPBOX_REFRESH_TOKEN_PREFIX . $token;
+    }
+
+    private static function isDropboxInvalidAccessToken(DropboxClientException $error): bool
+    {
+        return str_contains($error->getMessage(), 'invalid_access_token');
     }
 
     private function runWithFileTimeout(string $path, callable $callback): void
