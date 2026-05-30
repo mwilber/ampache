@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace AmpacheMcp;
 
+use Ampache\Module\System\Dba;
 use Ampache\Repository\Model\LibraryItemEnum;
 use Ampache\Repository\Model\Tmp_Playlist;
 
@@ -31,7 +32,8 @@ final class NativeTemporaryPlaylist
     {
         $this->bootstrap();
 
-        $playlist = Tmp_Playlist::get_from_session($sessionId);
+        $targetSessionId = $this->resolveTargetSessionId($sessionId);
+        $playlist = Tmp_Playlist::get_from_session($targetSessionId);
         if ($clear) {
             $playlist->clear();
         }
@@ -44,10 +46,28 @@ final class NativeTemporaryPlaylist
 
         return [
             'id' => $playlist->getId(),
-            'session' => $sessionId,
+            'session' => $targetSessionId,
+            'api_session' => $sessionId,
             'added' => $added,
             'total' => $playlist->count_items(),
         ];
+    }
+
+    private function resolveTargetSessionId(string $apiSessionId): string
+    {
+        $sql = "SELECT `username` FROM `session` WHERE `id` = ? AND `type` = 'api'";
+        $dbResults = Dba::read($sql, [$apiSessionId]);
+        $row = Dba::fetch_assoc($dbResults);
+        $username = trim((string)($row['username'] ?? ''));
+        if ($username === '') {
+            return $apiSessionId;
+        }
+
+        $sql = "SELECT `id` FROM `session` WHERE `username` = ? AND `type` NOT IN ('api', 'stream') AND `expire` > ? ORDER BY `expire` DESC LIMIT 1";
+        $dbResults = Dba::read($sql, [$username, time()]);
+        $row = Dba::fetch_assoc($dbResults);
+
+        return (string)($row['id'] ?? $apiSessionId);
     }
 
     private function bootstrap(): void
