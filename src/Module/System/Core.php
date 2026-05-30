@@ -120,16 +120,23 @@ class Core
      * @todo make dynamic and testable
      */
     public static function get_user_ip(): string
-    {
-        // get the x forward if it's valid
-        if (filter_has_var(INPUT_SERVER, 'HTTP_X_FORWARDED_FOR') && filter_var($_SERVER['HTTP_X_FORWARDED_FOR'], FILTER_VALIDATE_IP)) {
-            return filter_var($_SERVER['HTTP_X_FORWARDED_FOR'], FILTER_VALIDATE_IP);
-        }
-
-        return (filter_has_var(INPUT_SERVER, 'REMOTE_ADDR'))
-            ? filter_var($_SERVER['REMOTE_ADDR'], FILTER_VALIDATE_IP) ?: ''
-            : '';
-    }
+	{
+	    $xff = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
+	    if (is_string($xff) && $xff !== '') {
+	        foreach (explode(',', $xff) as $ip) {
+	            $ip = trim($ip);
+	            if (filter_var($ip, FILTER_VALIDATE_IP)) {
+	                return $ip;
+	            }
+	        }
+	    }
+	
+	    $remote = $_SERVER['REMOTE_ADDR'] ?? '';
+	
+	    return is_string($remote)
+	        ? (filter_var($remote, FILTER_VALIDATE_IP) ?: '')
+	        : '';
+	}
 
     /**
      * form_register
