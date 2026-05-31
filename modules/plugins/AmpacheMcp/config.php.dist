@@ -1,0 +1,39 @@
+<?php
+
+declare(strict_types=1);
+
+return [
+    // Shared token the remote AI agent must send as x-user-token or Authorization: Bearer.
+    'user_token' => 'change-me',
+
+    // Public Ampache base URL, without a trailing slash.
+    'ampache_base_url' => 'https://music.example.com',
+
+    // Ampache API key for the user whose library and AI Queue playlist should be controlled.
+    'ampache_api_key' => '',
+
+    // Ampache API version to request during handshake.
+    'ampache_api_version' => '6.0.0',
+
+    // Filesystem path to the Ampache install root. Required for AI Queue playlist writes.
+    'ampache_root' => '/var/www/ampache',
+
+    // Persistent playlist used as the cross-session queue visible to Subsonic clients.
+    'playlist_name' => 'AI Queue',
+
+    // Use public when a separate Subsonic user/player should be able to see the queue.
+    'playlist_type' => 'public',
+
+    // Writable JSON file used to store PWA PushSubscription records.
+    'push_subscription_file' => __DIR__ . '/data/push-subscriptions.json',
+
+    // Web Push VAPID settings. Leave blank to store subscriptions without sending notifications.
+    'vapid_subject' => 'mailto:admin@example.com',
+    'vapid_public_key' => '',
+    'vapid_private_key' => '',
+
+    // PWA URL opened when the user clicks the push notification.
+    'push_click_url' => 'https://player.example.com/',
+
+    'server_name' => 'ampache-mcp',
+];
