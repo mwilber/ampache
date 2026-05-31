@@ -37,18 +37,26 @@ use Ampache\Repository\Model\Podcast_Episode;
 use Ampache\Repository\Model\Song;
 use Ampache\Repository\Model\Video;
 use Exception;
+use GuzzleHttp\Client as GuzzleClient;
 use Kunnu\Dropbox\Dropbox;
 use Kunnu\Dropbox\DropboxApp;
 use Kunnu\Dropbox\DropboxFile;
 use Kunnu\Dropbox\Exceptions\DropboxClientException;
 use Kunnu\Dropbox\Models\ModelInterface;
 use ReflectionException;
+use RuntimeException;
+use Throwable;
 
 /**
  * This class handles all actual work in regards to remote Dropbox catalogs.
  */
 class Catalog_dropbox extends Catalog
 {
+    private const DROPBOX_CONNECT_TIMEOUT = 15;
+    private const DROPBOX_REQUEST_TIMEOUT = 30;
+    private const DROPBOX_TAG_READ_TIMEOUT = 30;
+    private const DROPBOX_REFRESH_TOKEN_PREFIX = 'refresh:';
+
     private string $version     = '000002';
     private string $type        = 'dropbox';
     private string $description = 'Dropbox Remote Catalog';
@@ -109,7 +117,14 @@ class Catalog_dropbox extends Catalog
      */
     public function get_create_help(): string
     {
-        return "<ul><li>" . T_("Go to https://www.dropbox.com/developers/apps/create") . "</li><li>" . T_("Select 'Dropbox API app'") . "</li><li>" . T_("Select 'Full Dropbox'") . "</li><li>" . T_("Give a name to your application and create it") . "</li><li>" . T_("Click the 'Generate' button to create an Access Token") . "</li><li>" . T_("Copy your App key and App secret and Access Token into the following fields.") . "</li></ul>";
+        return "<ul><li>" . implode("</li><li>", [
+            T_("Go to https://www.dropbox.com/developers/apps/create"),
+            T_("Select 'Scoped access' and 'Full Dropbox' if the catalog should read existing files anywhere in Dropbox; choose 'App Folder' only if the catalog path is inside the app folder."),
+            T_("Enable the files.metadata.read and files.content.read permissions on the app's Permissions tab and submit the changes."),
+            T_("For quick testing, generate an access token in the OAuth 2 settings. For long-running catalogs, use an offline OAuth flow and enter the refresh token prefixed with refresh:."),
+            T_("Raw Dropbox refresh tokens are accepted when creating a catalog and will be saved with the refresh: prefix."),
+            T_("Copy your app key, app secret, and access token or refresh token into the following fields."),
+        ]) . "</li></ul>";
     }
 
     /**
@@ -152,7 +167,7 @@ class Catalog_dropbox extends Catalog
 
         $fields['apikey']    = ['description' => T_('API key'), 'type' => 'text'];
         $fields['secret']    = ['description' => T_('Secret'), 'type' => 'password'];
-        $fields['authtoken'] = ['description' => T_('Access Token'), 'type' => 'text'];
+        $fields['authtoken'] = ['description' => T_('Access Token or refresh:<token>'), 'type' => 'text'];
         $fields['path']      = ['description' => T_('Path'), 'type' => 'text', 'value' => '/'];
         $fields['getchunk']  = [
             'description' => T_('Get chunked files on analyze'),
@@ -222,25 +237,36 @@ class Catalog_dropbox extends Catalog
         $getchunk  = (int)($data['getchunk'] ?? 0);
 
         if (!strlen($apikey) || !strlen($secret) || !strlen($authtoken)) {
-            AmpError::add('general', T_('Error: API Key, Secret and Access Token Required for Dropbox Catalogs'));
+            AmpError::add('general', T_('Error: API Key, Secret and Access Token or refresh token required for Dropbox Catalogs'));
 
             return false;
         }
         try {
-            $app = new DropboxApp($apikey, $secret, $authtoken);
+            $dropbox = self::createDropboxClient($apikey, $secret, $authtoken);
         } catch (DropboxClientException $error) {
             AmpError::add('general', T_('Invalid "API key", "secret", or "access token": ' . $error->getMessage()));
 
             return false;
         }
-        $dropbox = new Dropbox($app);
 
         try {
             $dropbox->listFolder($path);
         } catch (DropboxClientException $error) {
-            AmpError::add('general', T_('Invalid "dropbox-path": ' . $error->getMessage()));
+            if (!self::isDropboxRefreshToken($authtoken) && self::isDropboxInvalidAccessToken($error)) {
+                $authtoken = self::formatDropboxRefreshToken($authtoken);
+                try {
+                    $dropbox = self::createDropboxClient($apikey, $secret, $authtoken);
+                    $dropbox->listFolder($path);
+                } catch (DropboxClientException $refreshError) {
+                    AmpError::add('general', T_('Invalid "dropbox-path": ' . $refreshError->getMessage()));
 
-            return false;
+                    return false;
+                }
+            } else {
+                AmpError::add('general', T_('Invalid "dropbox-path": ' . $error->getMessage()));
+
+                return false;
+            }
         }
 
         // Make sure this catalog isn't already in use by an existing catalog
@@ -292,8 +318,7 @@ class Catalog_dropbox extends Catalog
      */
     public function update_remote_catalog(): int
     {
-        $app         = new DropboxApp($this->apikey, $this->secret, $this->authtoken);
-        $dropbox     = new Dropbox($app);
+        $dropbox     = $this->createDropbox();
         $this->count = 0;
         $songsadded  = $this->add_files($dropbox, $this->path);
         /* Update the Catalog last_add */
@@ -334,13 +359,15 @@ class Catalog_dropbox extends Catalog
                 $listFolderContinue = $dropbox->listFolderContinue($cursor);
                 $remainingItems     = $listFolderContinue->getItems();
                 foreach ($remainingItems as $item) {
-                    if ($item->getDataProperty('.tag') == "file") {
+                    if ($item instanceof ModelInterface && $item->getDataProperty('.tag') == "file") {
                         $subpath = $item->getDataProperty('path_display');
-                        if ($this->add_file($dropbox, $subpath)) {
+                        if (is_string($subpath) && $this->add_file($dropbox, $subpath)) {
                             $songsadded++;
                         }
                     }
                 }
+
+                $listFolderContents = $listFolderContinue;
             } while ($listFolderContinue->hasMoreItems() === true);
         }
 
@@ -349,31 +376,43 @@ class Catalog_dropbox extends Catalog
 
     public function add_file(Dropbox $dropbox, string $path): bool
     {
-        $file = $dropbox->getMetadata(
-            $path,
-            [
-                'include_media_info' => true,
-                'include_deleted' => true
-            ]
-        );
-        $filesize = $file->getDataProperty('size');
-        if ($filesize > 0) {
-            $is_audio_file = Catalog::is_audio_file($path);
-            $is_video_file = Catalog::is_video_file($path);
+        if ($this->check_remote_file($path)) {
+            debug_event('dropbox_catalog', 'Skipping existing media ' . $path, 5);
 
-            if ($is_audio_file) {
-                if (count($this->get_gather_types('music')) > 0 && $this->insert_song($dropbox, $path)) {
-                    return true;
+            return false;
+        }
+
+        try {
+            $file = $dropbox->getMetadata(
+                $path,
+                [
+                    'include_media_info' => true,
+                    'include_deleted' => true
+                ]
+            );
+            $filesize = $file->getDataProperty('size');
+            if ($filesize > 0) {
+                $is_audio_file = Catalog::is_audio_file($path);
+                $is_video_file = Catalog::is_video_file($path);
+
+                if ($is_audio_file) {
+                    if (count($this->get_gather_types('music')) > 0 && $this->insert_song($dropbox, $path)) {
+                        return true;
+                    }
+                    debug_event('dropbox.catalog', "read " . $path . " ignored, bad media type for this catalog.", 5);
+
+                } elseif (count($this->get_gather_types('video')) > 0) {
+                    if ($is_video_file && $this->insert_video($dropbox, $path)) {
+                        return true;
+                    }
+                    debug_event('dropbox.catalog', "read " . $path . " ignored, bad media type for this video catalog.", 5);
+
                 }
-                debug_event('dropbox.catalog', "read " . $path . " ignored, bad media type for this catalog.", 5);
-            } elseif (count($this->get_gather_types('video')) > 0) {
-                if ($is_video_file && $this->insert_video($dropbox, $path)) {
-                    return true;
-                }
-                debug_event('dropbox.catalog', "read " . $path . " ignored, bad media type for this video catalog.", 5);
+            } else {
+                debug_event('dropbox.catalog', "read " . $path . " ignored, 0 bytes", 5);
             }
-        } else {
-            debug_event('dropbox.catalog', "read " . $path . " ignored, 0 bytes", 5);
+        } catch (Throwable $error) {
+            debug_event('dropbox.catalog', 'read ' . $path . ' failed: ' . $error->getMessage(), 3);
         }
 
         return false;
@@ -396,47 +435,68 @@ class Catalog_dropbox extends Catalog
         $meta    = $dropbox->getMetadata($path);
         $outfile = Core::get_tmp_dir() . DIRECTORY_SEPARATOR . $meta->getName();
 
-        // Download File
-        $this->download($dropbox, $path, -1, $outfile);
+        try {
+            // Download File
+            if (!$this->download($dropbox, $path, -1, $outfile)) {
+                debug_event('dropbox.catalog', 'failed to download file: ' . $path, 3);
 
-        $vainfo = $this->getUtilityFactory()->createVaInfo(
-            $outfile,
-            $this->get_gather_types('music'),
-            '',
-            '',
-            (string) $this->sort_pattern,
-            (string) $this->rename_pattern
-        );
-        $vainfo->gather_tags();
-
-        $key     = VaInfo::get_tag_type($vainfo->tags);
-        $results = VaInfo::clean_tag_info($vainfo->tags, $key, $outfile);
-        // Set the remote path
-        $results['file']    = $path;
-        $results['catalog'] = $this->id;
-
-        // Set the remote path
-        if (!empty($results['artist']) && !empty($results['album'])) {
-            $this->count++;
-            $results['file'] = $outfile;
-            $song_id         = Song::insert($results);
-            if ($song_id) {
-                parent::gather_art([$song_id]);
+                return false;
             }
-            $results['file'] = $path;
-            $sql             = "UPDATE `song` SET `file` = ? WHERE `id` = ?";
-            Dba::write($sql, [$results['file'], $song_id]);
-        } else {
+
+            $vainfo = $this->getUtilityFactory()->createVaInfo(
+                $outfile,
+                $this->get_gather_types('music'),
+                '',
+                '',
+                (string) $this->sort_pattern,
+                (string) $this->rename_pattern
+            );
+            $this->runWithFileTimeout(
+                $path,
+                static function () use ($vainfo): void {
+                    $vainfo->gather_tags();
+                }
+            );
+
+            $key     = VaInfo::get_tag_type($vainfo->tags);
+            $results = VaInfo::clean_tag_info($vainfo->tags, $key, $outfile);
+            // Set the remote path
+            $results['file']    = $path;
+            $results['catalog'] = $this->id;
+
+            // Set the remote path
+            if (!empty($results['artist']) && !empty($results['album'])) {
+                $this->count++;
+                $results['file'] = $path;
+                $song_id         = Song::insert($results);
+                if ($song_id) {
+                    try {
+                        $sql = "UPDATE `song` SET `file` = ? WHERE `id` = ?";
+                        Dba::write($sql, [$outfile, $song_id]);
+                        parent::gather_art([$song_id]);
+                    } catch (Throwable $error) {
+                        debug_event('dropbox.catalog', 'gather art failed for ' . $path . ': ' . $error->getMessage(), 3);
+                    } finally {
+                        $sql = "UPDATE `song` SET `file` = ? WHERE `id` = ?";
+                        Dba::write($sql, [$path, $song_id]);
+                    }
+                }
+
+                return ($song_id > 0);
+            }
+
             debug_event(
                 'dropbox.catalog',
                 $results['file'] . " ignored because it is an orphan songs. Please check your catalog patterns.",
                 5
             );
+
+            return false;
+        } finally {
+            if (is_file($outfile)) {
+                unlink($outfile);
+            }
         }
-
-        unlink($outfile);
-
-        return true;
     }
 
     /**
@@ -540,8 +600,7 @@ class Catalog_dropbox extends Catalog
         $date           = time();
         $updated        = 0;
         $utilityFactory = $this->getUtilityFactory();
-        $app            = new DropboxApp($this->apikey, $this->secret, $this->authtoken);
-        $dropbox        = new Dropbox($app);
+        $dropbox        = $this->createDropbox();
         try {
             $sql        = 'SELECT `id`, `file`, `title` FROM `song` WHERE `catalog` = ?';
             $db_results = Dba::read($sql, [$this->id]);
@@ -602,8 +661,7 @@ class Catalog_dropbox extends Catalog
     public function clean_catalog_proc(?Interactor $interactor = null): int
     {
         $dead    = 0;
-        $app     = new DropboxApp($this->apikey, $this->secret, $this->authtoken);
-        $dropbox = new Dropbox($app);
+        $dropbox = $this->createDropbox();
 
         $sql        = 'SELECT `id`, `file` FROM `song` WHERE `catalog` = ?';
         $db_results = Dba::read($sql, [$this->id]);
@@ -714,8 +772,7 @@ class Catalog_dropbox extends Catalog
      */
     public function prepare_media(Podcast_Episode|Video|Song $media): array
     {
-        $app     = new DropboxApp($this->apikey, $this->secret, $this->authtoken);
-        $dropbox = new Dropbox($app);
+        $dropbox = $this->createDropbox();
 
         $file = (string) $media->file;
 
@@ -763,8 +820,7 @@ class Catalog_dropbox extends Catalog
 
             return true;
         }
-        $app     = new DropboxApp($this->apikey, $this->secret, $this->authtoken);
-        $dropbox = new Dropbox($app);
+        $dropbox = $this->createDropbox();
         $songs   = $this->get_songs();
 
         // Prevent the script from timing out
@@ -814,5 +870,122 @@ class Catalog_dropbox extends Catalog
         global $dic;
 
         return $dic->get(UtilityFactoryInterface::class);
+    }
+
+    private function createDropbox(): Dropbox
+    {
+        return self::createDropboxClient(
+            $this->apikey,
+            $this->secret,
+            $this->authtoken
+        );
+    }
+
+    /**
+     * @throws DropboxClientException
+     */
+    private static function createDropboxClient(string $appKey, string $appSecret, string $token): Dropbox
+    {
+        return new Dropbox(
+            new DropboxApp($appKey, $appSecret, self::getDropboxAccessToken($appKey, $appSecret, $token)),
+            [
+                'http_client_handler' => self::createHttpClient(),
+            ]
+        );
+    }
+
+    private static function createHttpClient(): GuzzleClient
+    {
+        return new GuzzleClient(
+            [
+                'connect_timeout' => self::DROPBOX_CONNECT_TIMEOUT,
+                'timeout' => self::DROPBOX_REQUEST_TIMEOUT,
+            ]
+        );
+    }
+
+    /**
+     * @throws DropboxClientException
+     */
+    private static function getDropboxAccessToken(string $appKey, string $appSecret, string $token): string
+    {
+        if (!self::isDropboxRefreshToken($token)) {
+            return $token;
+        }
+
+        $refreshToken = trim(substr($token, strlen(self::DROPBOX_REFRESH_TOKEN_PREFIX)));
+        if ($refreshToken === '') {
+            throw new DropboxClientException('Refresh token cannot be empty.');
+        }
+
+        try {
+            $response = self::createHttpClient()->post(
+                'https://api.dropboxapi.com/oauth2/token',
+                [
+                    'auth' => [$appKey, $appSecret],
+                    'form_params' => [
+                        'grant_type' => 'refresh_token',
+                        'refresh_token' => $refreshToken,
+                    ],
+                ]
+            );
+            $body = json_decode((string)$response->getBody(), true);
+        } catch (Throwable $error) {
+            throw new DropboxClientException(
+                'Unable to refresh Dropbox access token: ' . $error->getMessage(),
+                (int)$error->getCode(),
+                $error
+            );
+        }
+
+        if (!is_array($body) || !isset($body['access_token']) || !is_string($body['access_token'])) {
+            throw new DropboxClientException('Unable to refresh Dropbox access token.');
+        }
+
+        return $body['access_token'];
+    }
+
+    private static function isDropboxRefreshToken(string $token): bool
+    {
+        return str_starts_with($token, self::DROPBOX_REFRESH_TOKEN_PREFIX);
+    }
+
+    private static function formatDropboxRefreshToken(string $token): string
+    {
+        return self::isDropboxRefreshToken($token)
+            ? $token
+            : self::DROPBOX_REFRESH_TOKEN_PREFIX . $token;
+    }
+
+    private static function isDropboxInvalidAccessToken(DropboxClientException $error): bool
+    {
+        return str_contains($error->getMessage(), 'invalid_access_token');
+    }
+
+    private function runWithFileTimeout(string $path, callable $callback): void
+    {
+        if (
+            !function_exists('pcntl_alarm') ||
+            !function_exists('pcntl_signal') ||
+            !function_exists('pcntl_async_signals')
+        ) {
+            $callback();
+
+            return;
+        }
+
+        $asyncSignals = pcntl_async_signals(true);
+        pcntl_signal(SIGALRM, static function () use ($path): void {
+            throw new RuntimeException('Timed out reading tags for ' . $path);
+        });
+        pcntl_alarm(self::DROPBOX_TAG_READ_TIMEOUT);
+
+        try {
+            $callback();
+        } finally {
+            pcntl_alarm(0);
+            pcntl_signal(SIGALRM, SIG_DFL);
+            pcntl_async_signals($asyncSignals);
+        }
     }
 }
