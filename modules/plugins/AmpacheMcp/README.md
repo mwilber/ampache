@@ -33,7 +33,7 @@ Required config values:
 
 Recommended config values:
 
-- `ampache_api_version`: defaults to `8.0.0`.
+- `ampache_api_version`: defaults to `6.0.0`, which works across current Ampache 7 installs and older API compatibility modes.
 - `playlist_name`: defaults to `AI Queue`.
 - `playlist_type`: defaults to `public`, so a separate Subsonic player user can see the queue. Set to `private` if the player authenticates as the same Ampache user as the MCP API key.
 - `push_subscription_file`: writable JSON file used to store PWA push subscriptions.
@@ -55,3 +55,4 @@ Recommended config values:
 The endpoint follows the same web-accessible pattern as `rtm-mcp`: public health/landing routes, token auth for MCP, CORS with `mcp-session-id` exposed, and streamable HTTP-compatible JSON-RPC responses.
 
 See `PWA_PUSH_NOTIFICATIONS.md` for the player-side service worker and subscription flow.
+See `COMPANION_AGENT_INSTRUCTIONS.md` for agent-side handling of semantic search results and album queueing.

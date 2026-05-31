@@ -58,6 +58,39 @@ function ampache_mcp_base64url_decode(string $value): string
     return $decoded;
 }
 
+function ampache_mcp_boot_ampache(string $ampacheRoot): void
+{
+    static $booted = false;
+    static $bootedRoot = '';
+
+    $ampacheRoot = rtrim($ampacheRoot, '/');
+    if ($booted) {
+        if ($bootedRoot !== $ampacheRoot) {
+            throw new \RuntimeException('Ampache has already been booted from a different root.');
+        }
+
+        return;
+    }
+
+    if ($ampacheRoot === '' || !is_file($ampacheRoot . '/src/Config/Init.php')) {
+        throw new \RuntimeException('ampache_root must point at a local Ampache install.');
+    }
+
+    if (!defined('NO_SESSION')) {
+        define('NO_SESSION', '1');
+    }
+    if (!defined('OUTDATED_DATABASE_OK')) {
+        define('OUTDATED_DATABASE_OK', 1);
+    }
+
+    ob_start();
+    require $ampacheRoot . '/src/Config/Init.php';
+    ob_end_clean();
+
+    $booted = true;
+    $bootedRoot = $ampacheRoot;
+}
+
 /**
  * @return array<string, string>
  */

@@ -150,17 +150,7 @@ final class PersistentQueuePlaylist
             throw new \RuntimeException('ampache_root must point at a local Ampache install for AI Queue playlist writes.');
         }
 
-        if (!defined('NO_SESSION')) {
-            define('NO_SESSION', '1');
-        }
-        if (!defined('OUTDATED_DATABASE_OK')) {
-            define('OUTDATED_DATABASE_OK', 1);
-        }
-
-        ob_start();
-        require $this->ampacheRoot . '/src/Config/Init.php';
-        ob_end_clean();
-
+        ampache_mcp_boot_ampache($this->ampacheRoot);
         $this->bootstrapped = true;
     }
 }

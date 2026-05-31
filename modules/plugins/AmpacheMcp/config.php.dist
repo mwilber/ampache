@@ -13,7 +13,7 @@ return [
     'ampache_api_key' => '',
 
     // Ampache API version to request during handshake.
-    'ampache_api_version' => '8.0.0',
+    'ampache_api_version' => '6.0.0',
 
     // Filesystem path to the Ampache install root. Required for AI Queue playlist writes.
     'ampache_root' => '/var/www/ampache',

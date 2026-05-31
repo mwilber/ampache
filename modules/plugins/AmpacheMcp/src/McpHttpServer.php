@@ -11,6 +11,7 @@ final class McpHttpServer
     public function __construct(
         private AmpacheApiClient $ampache,
         private PersistentQueuePlaylist $queuePlaylist,
+        private SemanticMusicSearch $musicSearch,
         private PushSubscriptionStore $pushSubscriptions,
         private WebPushNotifier $pushNotifier,
         private string $userToken,
@@ -126,7 +127,7 @@ final class McpHttpServer
             [
                 'name' => 'ampache-search',
                 'title' => 'Ampache: Search Music',
-                'description' => 'Search Ampache songs by title, artist, album, or general music query.',
+                'description' => 'Search Ampache music and return semantic song, album, and artist candidates. The text content starts with the best interpretation.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
@@ -149,9 +150,19 @@ final class McpHttpServer
                             'items' => ['type' => 'integer', 'minimum' => 1],
                             'description' => 'Song ids returned by ampache-search.',
                         ],
+                        'albumId' => [
+                            'type' => 'integer',
+                            'minimum' => 1,
+                            'description' => 'Album id returned by ampache-search. Queues the full album in track order.',
+                        ],
+                        'albumIds' => [
+                            'type' => 'array',
+                            'items' => ['type' => 'integer', 'minimum' => 1],
+                            'description' => 'Album ids returned by ampache-search. Queues all selected albums in track order.',
+                        ],
                         'query' => [
                             'type' => 'string',
-                            'description' => 'Optional search query to resolve songs before building the playlist.',
+                            'description' => 'Optional search query to resolve songs or a high-confidence album before building the playlist.',
                         ],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 25],
                         'clear' => ['type' => 'boolean', 'default' => true],
@@ -176,13 +187,11 @@ final class McpHttpServer
                 throw new \InvalidArgumentException('query is required.');
             }
             $songs = $this->ampache->searchSongs($query, (int)($args['limit'] ?? 10), (int)($args['offset'] ?? 0));
-            $summary = $songs === []
-                ? 'No songs matched the search.'
-                : implode("\n", array_map([$this, 'formatSong'], array_slice($songs, 0, 20)));
+            $search = $this->musicSearch->describe($query, $songs, (int)($args['limit'] ?? 10));
 
             return [
-                'content' => [['type' => 'text', 'text' => $summary]],
-                'structuredContent' => ['total' => count($songs), 'songs' => $songs],
+                'content' => [['type' => 'text', 'text' => $search['content']]],
+                'structuredContent' => $search['structured'],
             ];
         }
 
@@ -338,12 +347,36 @@ final class McpHttpServer
             }
         }
 
+        $albumIds = [];
+        $albumId = (int)($args['albumId'] ?? 0);
+        if ($albumId > 0) {
+            $albumIds[] = $albumId;
+        }
+        if (is_array($args['albumIds'] ?? null)) {
+            foreach ($args['albumIds'] as $candidateAlbumId) {
+                $candidateAlbumId = (int)$candidateAlbumId;
+                if ($candidateAlbumId > 0) {
+                    $albumIds[] = $candidateAlbumId;
+                }
+            }
+        }
+        if ($albumIds !== []) {
+            $ids = array_merge($ids, $this->musicSearch->songIdsForAlbumIds($albumIds));
+        }
+
         $query = trim((string)($args['query'] ?? ''));
         if ($query !== '') {
-            foreach ($this->ampache->searchSongs($query, (int)($args['limit'] ?? 25)) as $song) {
-                $songId = (int)($song['id'] ?? 0);
-                if ($songId > 0) {
-                    $ids[] = $songId;
+            $songs = $this->ampache->searchSongs($query, (int)($args['limit'] ?? 25));
+            $search = $this->musicSearch->describe($query, $songs, (int)($args['limit'] ?? 25));
+            $bestMatch = is_array($search['structured']['bestMatch'] ?? null) ? $search['structured']['bestMatch'] : null;
+            if (($bestMatch['type'] ?? '') === 'album' && ($bestMatch['confidence'] ?? '') === 'high') {
+                $ids = array_merge($ids, array_map('intval', $bestMatch['songIds'] ?? []));
+            } else {
+                foreach ($songs as $song) {
+                    $songId = (int)($song['id'] ?? 0);
+                    if ($songId > 0) {
+                        $ids[] = $songId;
+                    }
                 }
             }
         }
