@@ -43,6 +43,21 @@ function ampache_mcp_json_response(array $payload, int $status = 200, array $hea
     echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 }
 
+function ampache_mcp_base64url_encode(string $value): string
+{
+    return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+}
+
+function ampache_mcp_base64url_decode(string $value): string
+{
+    $decoded = base64_decode(strtr($value, '-_', '+/'), true);
+    if ($decoded === false) {
+        throw new \InvalidArgumentException('Invalid base64url value.');
+    }
+
+    return $decoded;
+}
+
 /**
  * @return array<string, string>
  */

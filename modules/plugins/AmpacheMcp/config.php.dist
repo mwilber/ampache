@@ -24,5 +24,16 @@ return [
     // Use public when a separate Subsonic user/player should be able to see the queue.
     'playlist_type' => 'public',
 
+    // Writable JSON file used to store PWA PushSubscription records.
+    'push_subscription_file' => __DIR__ . '/data/push-subscriptions.json',
+
+    // Web Push VAPID settings. Leave blank to store subscriptions without sending notifications.
+    'vapid_subject' => 'mailto:admin@example.com',
+    'vapid_public_key' => '',
+    'vapid_private_key' => '',
+
+    // PWA URL opened when the user clicks the push notification.
+    'push_click_url' => 'https://player.example.com/',
+
     'server_name' => 'ampache-mcp',
 ];

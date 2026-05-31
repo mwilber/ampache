@@ -11,6 +11,8 @@ final class McpHttpServer
     public function __construct(
         private AmpacheApiClient $ampache,
         private PersistentQueuePlaylist $queuePlaylist,
+        private PushSubscriptionStore $pushSubscriptions,
+        private WebPushNotifier $pushNotifier,
         private string $userToken,
         private string $serverName
     ) {
@@ -34,6 +36,17 @@ final class McpHttpServer
             ampache_mcp_json_response(['status' => 'ok', 'server' => $this->serverName]);
             return;
         }
+        if ($_SERVER['REQUEST_METHOD'] === 'GET' && str_ends_with($path, '/push/public-key')) {
+            ampache_mcp_json_response([
+                'publicKey' => $this->pushNotifier->publicKey(),
+                'configured' => $this->pushNotifier->isConfigured(),
+            ]);
+            return;
+        }
+        if ($_SERVER['REQUEST_METHOD'] === 'GET' && str_ends_with($path, '/push/check')) {
+            $this->pushCheckPage();
+            return;
+        }
 
         $authError = $this->authorizationError();
         if ($authError !== null) {
@@ -41,6 +54,14 @@ final class McpHttpServer
                 ['message' => $authError['message']],
                 $authError['status']
             );
+            return;
+        }
+        if (str_contains($path, '/push/')) {
+            try {
+                $this->handlePushRoute($path);
+            } catch (\Throwable $error) {
+                ampache_mcp_json_response(['message' => $error->getMessage()], 400);
+            }
             return;
         }
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -174,14 +195,131 @@ final class McpHttpServer
             $authSession = $this->ampache->getAuthToken();
             $result = $this->queuePlaylist->replaceSongs($authSession, $songIds, (bool)($args['clear'] ?? true));
             $text = sprintf('Playlist "%s" now contains %d song(s).', $result['name'], $result['total']);
+            $push = $this->pushNotifier->send([
+                'title' => 'AI Queue ready',
+                'body' => sprintf('%d song(s) ready in %s.', $result['total'], $result['name']),
+                'data' => [
+                    'playlistId' => $result['id'],
+                    'playlistName' => $result['name'],
+                    'total' => $result['total'],
+                    'added' => $result['added'],
+                ],
+            ]);
 
             return [
                 'content' => [['type' => 'text', 'text' => $text]],
-                'structuredContent' => ['mode' => 'persistent_playlist'] + $result,
+                'structuredContent' => ['mode' => 'persistent_playlist', 'push' => $push] + $result,
             ];
         }
 
         throw new \InvalidArgumentException('Unknown tool: ' . $name);
+    }
+
+    private function handlePushRoute(string $path): void
+    {
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            ampache_mcp_json_response(['message' => 'Method not allowed'], 405);
+            return;
+        }
+
+        $body = $this->jsonBody();
+        if (str_ends_with($path, '/push/subscribe')) {
+            $headers = ampache_mcp_request_headers();
+            $record = $this->pushSubscriptions->save($body, (string)($headers['User-Agent'] ?? $headers['user-agent'] ?? ''));
+            ampache_mcp_json_response([
+                'status' => 'subscribed',
+                'id' => $record['id'],
+                'subscriptions' => count($this->pushSubscriptions->all()),
+            ]);
+            return;
+        }
+
+        if (str_ends_with($path, '/push/unsubscribe')) {
+            $endpoint = (string)($body['endpoint'] ?? '');
+            $id = (string)($body['id'] ?? '');
+            $deleted = $endpoint !== ''
+                ? $this->pushSubscriptions->deleteByEndpoint($endpoint)
+                : ($id !== '' && $this->pushSubscriptions->deleteById($id));
+            ampache_mcp_json_response([
+                'status' => $deleted ? 'unsubscribed' : 'not_found',
+                'subscriptions' => count($this->pushSubscriptions->all()),
+            ]);
+            return;
+        }
+
+        if (str_ends_with($path, '/push/test')) {
+            $result = $this->pushNotifier->send([
+                'title' => (string)($body['title'] ?? 'Ampache MCP test'),
+                'body' => (string)($body['body'] ?? 'Push notifications are connected.'),
+                'url' => (string)($body['url'] ?? ''),
+                'tag' => 'ampache-mcp-test',
+            ]);
+            ampache_mcp_json_response(['status' => 'sent', 'push' => $result]);
+            return;
+        }
+
+        ampache_mcp_json_response(['message' => 'Not found'], 404);
+    }
+
+    private function pushCheckPage(): void
+    {
+        $diagnostics = method_exists($this->pushSubscriptions, 'diagnostics')
+            ? $this->pushSubscriptions->diagnostics()
+            : [
+                'path' => 'unknown',
+                'directory' => 'unknown',
+                'directoryExists' => false,
+                'directoryWritable' => false,
+                'fileExists' => false,
+                'fileWritable' => false,
+                'canWrite' => false,
+                'message' => 'The configured subscription store does not expose diagnostics.',
+            ];
+
+        http_response_code($diagnostics['canWrite'] ? 200 : 500);
+        header('Content-Type: text/html; charset=utf-8');
+
+        $status = $diagnostics['canWrite'] ? 'Writable' : 'Not writable';
+        $statusClass = $diagnostics['canWrite'] ? 'ok' : 'bad';
+        echo '<!doctype html><html lang="en"><head><meta charset="utf-8">';
+        echo '<meta name="viewport" content="width=device-width, initial-scale=1">';
+        echo '<title>Ampache MCP Push Storage Check</title>';
+        echo '<style>body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;line-height:1.5;max-width:760px}';
+        echo '.status{display:inline-block;padding:.35rem .6rem;border-radius:.35rem;font-weight:700}.ok{background:#e5f7ed;color:#17633a}.bad{background:#fde8e8;color:#9b1c1c}';
+        echo 'dl{display:grid;grid-template-columns:max-content 1fr;gap:.5rem 1rem}dt{font-weight:700}dd{margin:0;word-break:break-all}code{background:#f4f4f5;padding:.1rem .25rem;border-radius:.25rem}</style>';
+        echo '</head><body>';
+        echo '<h1>Ampache MCP Push Storage Check</h1>';
+        echo '<p><span class="status ' . $statusClass . '">' . htmlspecialchars($status, ENT_QUOTES, 'UTF-8') . '</span></p>';
+        echo '<p>' . htmlspecialchars((string)$diagnostics['message'], ENT_QUOTES, 'UTF-8') . '</p>';
+        echo '<dl>';
+        foreach ([
+            'Subscription file' => 'path',
+            'Directory' => 'directory',
+            'Directory exists' => 'directoryExists',
+            'Directory writable' => 'directoryWritable',
+            'File exists' => 'fileExists',
+            'File writable' => 'fileWritable',
+        ] as $label => $key) {
+            $value = $diagnostics[$key] ?? '';
+            $text = is_bool($value) ? ($value ? 'yes' : 'no') : (string)$value;
+            echo '<dt>' . htmlspecialchars($label, ENT_QUOTES, 'UTF-8') . '</dt><dd><code>' . htmlspecialchars($text, ENT_QUOTES, 'UTF-8') . '</code></dd>';
+        }
+        echo '</dl>';
+        echo '</body></html>';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function jsonBody(): array
+    {
+        $raw = file_get_contents('php://input') ?: '';
+        $body = json_decode($raw, true);
+        if (!is_array($body)) {
+            throw new \InvalidArgumentException('Request body must be JSON.');
+        }
+
+        return $body;
     }
 
     /**
